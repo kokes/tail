@@ -33,11 +33,12 @@ var (
 )
 
 type Line struct {
-	Text     string    // The contents of the file
-	Num      int       // The line number
-	SeekInfo SeekInfo  // SeekInfo
-	Time     time.Time // Present time
-	Err      error     // Error from tail
+	Text          string    // The contents of the file
+	Num           int       // The line number
+	SeekInfo      SeekInfo  // SeekInfo
+	Time          time.Time // Present time
+	Err           error     // Error from tail
+	NewlineEnding bool      // is the line complete (with `\n`)
 }
 
 // Deprecated: this function is no longer used internally and it has little of no
@@ -46,7 +47,7 @@ type Line struct {
 //
 // NewLine returns a * pointer to a Line struct.
 func NewLine(text string, lineNum int) *Line {
-	return &Line{text, lineNum, SeekInfo{}, time.Now(), nil}
+	return &Line{text, lineNum, SeekInfo{}, time.Now(), nil, false}
 }
 
 // SeekInfo represents arguments to io.Seek. See: https://golang.org/pkg/io/#SectionReader.Seek
@@ -236,8 +237,6 @@ func (tail *Tail) readLine() (string, error) {
 		return line, err
 	}
 
-	line = strings.TrimRight(line, "\n")
-
 	return line, err
 }
 
@@ -288,7 +287,14 @@ func (tail *Tail) tailFileSync() {
 				// file when rate limit is reached.
 				msg := ("Too much log activity; waiting a second before resuming tailing")
 				offset, _ := tail.Tell()
-				tail.Lines <- &Line{msg, tail.lineNum, SeekInfo{Offset: offset}, time.Now(), errors.New(msg)}
+				// TODO(PR): clean this up? we moved it all the way here, because we need the newline in the `sendLine` call
+				var newlineEnding bool
+				if strings.HasSuffix(line, "\n") {
+					newlineEnding = true
+					line = strings.TrimRight(line, "\n")
+				}
+
+				tail.Lines <- &Line{msg, tail.lineNum, SeekInfo{Offset: offset}, time.Now(), errors.New(msg), newlineEnding}
 				select {
 				case <-time.After(time.Second):
 				case <-tail.Dying():
@@ -417,6 +423,8 @@ func (tail *Tail) seekTo(pos SeekInfo) error {
 // if necessary. Return false if rate limit is reached.
 func (tail *Tail) sendLine(line string) bool {
 	now := time.Now()
+	newlineEnding := strings.HasSuffix(line, "\n")
+	line = strings.TrimRight(line, "\n")
 	lines := []string{line}
 
 	// Split longer lines
@@ -424,11 +432,12 @@ func (tail *Tail) sendLine(line string) bool {
 		lines = util.PartitionString(line, tail.MaxLineSize)
 	}
 
-	for _, line := range lines {
+	for j, line := range lines {
 		tail.lineNum++
 		offset, _ := tail.Tell()
+		chunkNewline := newlineEnding && (j == len(lines)-1)
 		select {
-		case tail.Lines <- &Line{line, tail.lineNum, SeekInfo{Offset: offset}, now, nil}:
+		case tail.Lines <- &Line{line, tail.lineNum, SeekInfo{Offset: offset}, now, nil, chunkNewline}:
 		case <-tail.Dying():
 			return true
 		}
