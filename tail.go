@@ -287,7 +287,6 @@ func (tail *Tail) tailFileSync() {
 				// file when rate limit is reached.
 				msg := ("Too much log activity; waiting a second before resuming tailing")
 				offset, _ := tail.Tell()
-				// TODO(PR): clean this up? we moved it all the way here, because we need the newline in the `sendLine` call
 				var newlineEnding bool
 				if strings.HasSuffix(line, "\n") {
 					newlineEnding = true
