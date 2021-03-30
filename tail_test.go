@@ -415,6 +415,61 @@ func TestBlockUntilExists(t *testing.T) {
 	tail.Cleanup()
 }
 
+func TestIncompleteLines(t *testing.T) {
+	tailTest := NewTailTest("incomplete-lines", t)
+	filename := "test.txt"
+	config := Config{
+		Follow: true,
+	}
+	tail := tailTest.StartTail(filename, config)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		tailTest.CreateFile(filename, "hello world\n")
+		time.Sleep(100 * time.Millisecond)
+		// here we intentially write a partial line to see if `Tail` contains
+		// information that it's incomplete
+		tailTest.AppendFile(filename, "hello")
+		time.Sleep(100 * time.Millisecond)
+		tailTest.AppendFile(filename, " again\n")
+	}()
+
+	lines := []lineEOL{{"hello world", true}, {"hello", false}, {" again", true}}
+
+	tailTest.ReadLinesEOL(tail, lines, false)
+
+	tailTest.RemoveFile(filename)
+	tail.Stop()
+	tail.Cleanup()
+}
+
+func TestIncompleteLongLines(t *testing.T) {
+	tailTest := NewTailTest("incomplete-lines", t)
+	filename := "test.txt"
+	config := Config{
+		Follow:      true,
+		MaxLineSize: 3,
+	}
+	tail := tailTest.StartTail(filename, config)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		tailTest.CreateFile(filename, "hello world\n")
+		time.Sleep(100 * time.Millisecond)
+		tailTest.AppendFile(filename, "hello")
+		time.Sleep(100 * time.Millisecond)
+		tailTest.AppendFile(filename, "again\n")
+	}()
+
+	lines := []lineEOL{{"hel", false}, {"lo ", false}, {"wor", false}, {"ld", true},
+		{"hel", false}, {"lo", false}, {"aga", false}, {"in", true},
+	}
+
+	tailTest.ReadLinesEOL(tail, lines, false)
+
+	tailTest.RemoveFile(filename)
+	tail.Stop()
+	tail.Cleanup()
+}
+
 func maxLineSize(t *testing.T, follow bool, fileContent string, expected []string) {
 	tailTest := NewTailTest("maxlinesize", t)
 	tailTest.CreateFile("test.txt", fileContent)
@@ -673,6 +728,57 @@ func (t TailTest) ReadLines(tail *Tail, lines []string, useCursor bool) {
 					"unexpected line/err from tail: "+
 						"expecting <<%s>>>, but got <<<%s>>>",
 					line, tailedLine.Text)
+			}
+
+			cursor++
+			break
+		}
+	}
+}
+
+type lineEOL struct {
+	line    string
+	newline bool
+}
+
+// ReadLinesEOL works the same way as ReadLines, but checks against line endings returned
+// for each line
+func (t TailTest) ReadLinesEOL(tail *Tail, lines []lineEOL, useCursor bool) {
+	cursor := 1
+
+	for _, line := range lines {
+		for {
+			tailedLine, ok := <-tail.Lines
+			if !ok {
+				// tail.Lines is closed and empty.
+				err := tail.Err()
+				if err != nil {
+					t.Fatalf("tail ended with error: %v", err)
+				}
+				t.Fatalf("tail ended early; expecting more: %v", lines[cursor:])
+			}
+			if tailedLine == nil {
+				t.Fatalf("tail.Lines returned nil; not possible")
+			}
+
+			if useCursor && tailedLine.Num < cursor {
+				// skip lines up until cursor
+				continue
+			}
+
+			// Note: not checking .Err as the `lines` argument is designed
+			// to match error strings as well.
+			if tailedLine.Text != line.line {
+				t.Fatalf(
+					"unexpected line/err from tail: "+
+						"expecting <<%s>>>, but got <<<%s>>>",
+					line.line, tailedLine.Text)
+			}
+			if tailedLine.NewlineEnding != line.newline {
+				t.Fatalf(
+					"unexpected line ending information from tail: "+
+						"expecting <<%v>>>, but got <<<%v>>>",
+					line.newline, tailedLine.NewlineEnding)
 			}
 
 			cursor++
